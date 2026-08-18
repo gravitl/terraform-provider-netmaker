@@ -1,0 +1,20 @@
+# Copy this file to terraform.tfvars and fill in real values.
+# terraform.tfvars is gitignored — safe to put real credentials there.
+# Leave any of these blank ("") to fall back to the matching
+# NETMAKER_API_URL / NETMAKER_API_TOKEN / NETMAKER_TENANT_ID env var instead.
+
+netmaker_api_url   = "https://netmaker.example.com"
+netmaker_api_token = "your-pat-here"
+netmaker_tenant_id = ""
+
+# netmaker_device is opt-in — leave deploy_device = false unless you have a
+# real, disposable machine to point it at. It will actually SSH in and
+# install netclient.
+deploy_device            = false
+device_host_ip           = ""
+device_host_port         = 22
+device_username          = ""
+device_private_key       = ""
+device_private_key_path  = ""
+device_password          = ""
+device_netclient_version = "v1.2.0"

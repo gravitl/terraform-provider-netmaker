@@ -1,0 +1,10 @@
+/bin/
+
+# Terraform local state/lock/cache from running examples
+examples/.terraform/
+examples/.terraform.lock.hcl
+examples/terraform.tfstate
+examples/terraform.tfstate.backup
+
+# Real creds — keep terraform.tfvars.example committed, not this
+examples/terraform.tfvars
