@@ -8,3 +8,5 @@ examples/terraform.tfstate.backup
 
 # Real creds — keep terraform.tfvars.example committed, not this
 examples/terraform.tfvars
+
+.idea/
