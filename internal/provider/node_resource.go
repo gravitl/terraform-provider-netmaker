@@ -52,7 +52,7 @@ func (r *NodeResource) Metadata(_ context.Context, req resource.MetadataRequest,
 
 func (r *NodeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Joins an existing netmaker_device to a network, creating a Node. Does not install or configure anything on the device — it must already be running netclient (e.g. via netmaker_device); the running netclient picks up the new network automatically.",
+		Description: "Joins an existing netmaker_device to a network, creating a Node. Does not install or configure anything on the device — it must already be running netclient (e.g. via netmaker_device); the running netclient picks up the new network automatically. Optionally turns the node into an ingress gateway (is_ingress_gateway) — the attach point for netmaker_ext_client's gateway_node_id.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "Server-assigned node ID.",
@@ -79,11 +79,15 @@ func (r *NodeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Description: "Remove the node even if it has unresolved dependents (e.g. it's a relay/gateway other nodes depend on).",
 				Optional:    true,
 			},
-			"address":             schema.StringAttribute{Computed: true},
-			"address6":            schema.StringAttribute{Computed: true},
-			"connected":           schema.BoolAttribute{Computed: true},
-			"is_egress_gateway":   schema.BoolAttribute{Computed: true},
-			"is_ingress_gateway":  schema.BoolAttribute{Computed: true},
+			"address":           schema.StringAttribute{Computed: true},
+			"address6":          schema.StringAttribute{Computed: true},
+			"connected":         schema.BoolAttribute{Computed: true},
+			"is_egress_gateway": schema.BoolAttribute{Computed: true},
+			"is_ingress_gateway": schema.BoolAttribute{
+				Description: "Whether this node is an ingress (remote-access) gateway — the attach point for netmaker_ext_client's gateway_node_id. Set to true to turn this node into a gateway on create/update; set to false to remove the gateway role.",
+				Optional:    true,
+				Computed:    true,
+			},
 			"is_relay":            schema.BoolAttribute{Computed: true},
 			"is_internet_gateway": schema.BoolAttribute{Computed: true},
 			"status":              schema.StringAttribute{Computed: true},
@@ -141,6 +145,14 @@ func (r *NodeResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
+	if !plan.IsIngressGateway.IsNull() && !plan.IsIngressGateway.IsUnknown() && plan.IsIngressGateway.ValueBool() {
+		node, err = r.client.CreateGateway(ctx, network, node.ID)
+		if err != nil {
+			resp.Diagnostics.AddError("Error creating gateway", err.Error())
+			return
+		}
+	}
+
 	model := nodeResourceToModel(node)
 	model.ForceDelete = plan.ForceDelete
 	resp.Diagnostics.Append(resp.State.Set(ctx, model)...)
@@ -169,22 +181,37 @@ func (r *NodeResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 }
 
 func (r *NodeResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	// device_id/network are RequiresReplace; only force_delete can change,
-	// which has no server-side effect until Delete.
+	// device_id/network are RequiresReplace; force_delete has no
+	// server-side effect until Delete. is_ingress_gateway is the only
+	// attribute that needs reconciling here.
 	var plan NodeResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	node, err := r.findNode(ctx, plan.Network.ValueString(), plan.DeviceID.ValueString())
+	network := plan.Network.ValueString()
+	node, err := r.findNode(ctx, network, plan.DeviceID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading node", err.Error())
 		return
 	}
 	if node == nil {
-		resp.Diagnostics.AddError("Node not found", fmt.Sprintf("device %q is no longer joined to network %q", plan.DeviceID.ValueString(), plan.Network.ValueString()))
+		resp.Diagnostics.AddError("Node not found", fmt.Sprintf("device %q is no longer joined to network %q", plan.DeviceID.ValueString(), network))
 		return
+	}
+
+	wantGateway := plan.IsIngressGateway.ValueBool()
+	if wantGateway != node.IsIngressGateway {
+		if wantGateway {
+			node, err = r.client.CreateGateway(ctx, network, node.ID)
+		} else {
+			node, err = r.client.DeleteGateway(ctx, network, node.ID)
+		}
+		if err != nil {
+			resp.Diagnostics.AddError("Error updating gateway status", err.Error())
+			return
+		}
 	}
 
 	model := nodeResourceToModel(node)
