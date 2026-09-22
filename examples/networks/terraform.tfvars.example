@@ -1,0 +1,8 @@
+# Copy this file to terraform.tfvars and fill in real values.
+# terraform.tfvars is gitignored — safe to put real credentials there.
+# Leave any of these blank ("") to fall back to the matching
+# NETMAKER_API_URL / NETMAKER_API_TOKEN / NETMAKER_TENANT_ID env var instead.
+
+netmaker_api_url   = "https://netmaker.example.com"
+netmaker_api_token = "your-pat-here"
+netmaker_tenant_id = ""
