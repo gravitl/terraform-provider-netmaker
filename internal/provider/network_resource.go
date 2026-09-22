@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -50,11 +52,10 @@ type NetworkResourceModel struct {
 	Name                types.String `tfsdk:"name"`
 	AddressRange        types.String `tfsdk:"address_range"`
 	AddressRange6       types.String `tfsdk:"address_range6"`
-	DefaultKeepAlive    types.Int64  `tfsdk:"default_keepalive"`
-	DefaultMTU          types.Int64  `tfsdk:"default_mtu"`
 	AutoJoin            types.Bool   `tfsdk:"auto_join"`
 	AutoRemove          types.Bool   `tfsdk:"auto_remove"`
 	AutoRemoveThreshold types.Int64  `tfsdk:"auto_remove_threshold"`
+	AutoRemoveTags      types.List   `tfsdk:"auto_remove_tags"`
 	JITEnabled          types.Bool   `tfsdk:"jit_enabled"`
 	DefaultValue        types.String `tfsdk:"default_value"`
 	DefaultToken        types.String `tfsdk:"default_token"`
@@ -128,16 +129,6 @@ func (r *NetworkResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"default_keepalive": schema.Int64Attribute{
-				Description: "Default WireGuard persistent keepalive, in seconds.",
-				Optional:    true,
-				Computed:    true,
-			},
-			"default_mtu": schema.Int64Attribute{
-				Description: "Default WireGuard interface MTU.",
-				Optional:    true,
-				Computed:    true,
-			},
 			"auto_join": schema.BoolAttribute{
 				Description: "Whether new enrollment keys default to auto-joining this network.",
 				Optional:    true,
@@ -153,10 +144,19 @@ func (r *NetworkResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Optional:    true,
 				Computed:    true,
 			},
-			"jit_enabled": schema.BoolAttribute{
-				Description: "Whether just-in-time access is enabled for this network.",
+			"auto_remove_tags": schema.ListAttribute{
+				Description: "Tags whose nodes are eligible for auto-remove (or the literal \"*\" for all nodes in the network). Each tag must already exist as a netmaker_tag — auto-created if missing, same as default_enrollment_key.tags, since this can be set in the same apply that creates the network itself, before a netmaker_tag resource scoped to it could exist.",
 				Optional:    true,
 				Computed:    true,
+				ElementType: types.StringType,
+			},
+			"jit_enabled": schema.BoolAttribute{
+				Description: "Whether just-in-time access is enabled for this network. Only honored at network creation — Netmaker's network update API silently ignores changes to this after creation, so changing it here forces recreation instead of a no-op update.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+				},
 			},
 			"default_value": schema.StringAttribute{
 				Description: "Server-assigned value of the network's default enrollment key.",
@@ -216,12 +216,18 @@ func (r *NetworkResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	var autoRemoveTagNames []string
+	if !plan.AutoRemoveTags.IsNull() && !plan.AutoRemoveTags.IsUnknown() {
+		resp.Diagnostics.Append(plan.AutoRemoveTags.ElementsAs(ctx, &autoRemoveTagNames, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	n := &nmclient.Network{
 		NetID:               plan.Name.ValueString(),
 		AddressRange:        plan.AddressRange.ValueString(),
 		AddressRange6:       plan.AddressRange6.ValueString(),
-		DefaultKeepAlive:    int(plan.DefaultKeepAlive.ValueInt64()),
-		DefaultMTU:          int32(plan.DefaultMTU.ValueInt64()),
 		AutoJoin:            plan.AutoJoin.ValueBool(),
 		AutoRemove:          plan.AutoRemove.ValueBool(),
 		AutoRemoveThreshold: int(plan.AutoRemoveThreshold.ValueInt64()),
@@ -232,6 +238,23 @@ func (r *NetworkResource) Create(ctx context.Context, req resource.CreateRequest
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating network", err.Error())
 		return
+	}
+
+	// auto_remove_tags can only be resolved (and auto-created — see
+	// ensureNetworkTags) once the network exists, so it's applied as a
+	// follow-up update rather than in the initial create request above.
+	if len(autoRemoveTagNames) > 0 {
+		resolved, err := r.ensureNetworkTags(ctx, created.NetID, autoRemoveTagNames)
+		if err != nil {
+			resp.Diagnostics.AddError("Error configuring network's auto_remove_tags", err.Error())
+			return
+		}
+		n.AutoRemoveTags = resolved
+		created, err = r.client.UpdateNetwork(ctx, n)
+		if err != nil {
+			resp.Diagnostics.AddError("Error setting network's auto_remove_tags", err.Error())
+			return
+		}
 	}
 
 	defaultKey, err := r.client.GetDefaultEnrollmentKeyForNetwork(ctx, created.NetID)
@@ -253,7 +276,8 @@ func (r *NetworkResource) Create(ctx context.Context, req resource.CreateRequest
 		}
 	}
 
-	model := networkToModel(created)
+	model, modelDiags := networkToModel(ctx, created)
+	resp.Diagnostics.Append(modelDiags...)
 	resp.Diagnostics.Append(applyDefaultEnrollmentKey(ctx, &model, defaultKey)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -285,16 +309,75 @@ func (r *NetworkResource) applyDefaultEnrollmentKeyConfig(ctx context.Context, n
 			return nil, fmt.Errorf("invalid default_enrollment_key.tags: %v", err)
 		}
 	}
+	groups, err := r.ensureNetworkTags(ctx, netID, tags)
+	if err != nil {
+		return nil, err
+	}
 	req := &nmclient.EnrollmentKeyRequest{
 		Networks:          []string{netID},
 		Unlimited:         true,
 		Type:              nmclient.KeyTypeUnlimited,
 		Default:           true,
-		Groups:            tags,
+		Groups:            groups,
 		Relay:             cfg.GatewayID.ValueString(),
 		AutoAssignGateway: cfg.AutoAssignGateway.ValueBool(),
 	}
 	return r.client.UpdateEnrollmentKey(ctx, keyValue, req)
+}
+
+// ensureNetworkTags auto-creates any of tagNames that don't already exist
+// as a netmaker_tag in netID, and returns the fully-qualified tag IDs
+// ("<network>.<name>") to send server-side — used for both
+// default_enrollment_key.tags and auto_remove_tags. The literal "*"
+// (auto_remove_tags' "every node" wildcard) is passed through unchanged,
+// never looked up or created as a tag. Unlike netmaker_enrollment_key.tags
+// (which requires the referenced tags to already exist and fails
+// otherwise — see that resource's doc comment), both of these are
+// attributes of the network resource itself and can be set in the same
+// apply that creates the network, before a netmaker_tag resource scoped
+// to it could exist (a tag's network must already exist), so auto-creating
+// is the only workable option here.
+func (r *NetworkResource) ensureNetworkTags(ctx context.Context, netID string, tagNames []string) ([]string, error) {
+	if len(tagNames) == 0 {
+		return nil, nil
+	}
+	existing, err := r.client.ListTags(ctx, netID)
+	if err != nil {
+		return nil, fmt.Errorf("listing tags for network %q: %w", netID, err)
+	}
+	existingNames := make(map[string]struct{}, len(existing))
+	for _, t := range existing {
+		existingNames[t.TagName] = struct{}{}
+	}
+	resolved := make([]string, 0, len(tagNames))
+	for _, name := range tagNames {
+		if name == "*" {
+			resolved = append(resolved, name)
+			continue
+		}
+		if _, ok := existingNames[name]; !ok {
+			if _, err := r.client.CreateTag(ctx, netID, name, ""); err != nil {
+				return nil, fmt.Errorf("auto-creating tag %q in network %q: %w", name, netID, err)
+			}
+		}
+		resolved = append(resolved, nmclient.TagID(netID, name))
+	}
+	return resolved, nil
+}
+
+// tagIDsToNames converts fully-qualified tag IDs ("<network>.<name>", as
+// returned by the server for auto_remove_tags) back to the plain names
+// this resource's attribute is configured with, stripping the
+// "<network>." prefix. The literal "*" wildcard passes through unchanged.
+// Network and tag names can't contain literal dots
+// (proLogic.CheckIDSyntax), so the prefix is unambiguous to strip.
+func tagIDsToNames(network string, ids []string) []string {
+	prefix := network + "."
+	names := make([]string, len(ids))
+	for i, id := range ids {
+		names[i] = strings.TrimPrefix(id, prefix)
+	}
+	return names
 }
 
 // decodeDefaultEnrollmentKeyConfig decodes a plan/config value of the
@@ -366,7 +449,8 @@ func (r *NetworkResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	model := networkToModel(n)
+	model, diags := networkToModel(ctx, n)
+	resp.Diagnostics.Append(diags...)
 	resp.Diagnostics.Append(applyDefaultEnrollmentKey(ctx, &model, defaultKey)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -383,15 +467,27 @@ func (r *NetworkResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	var autoRemoveTagNames []string
+	if !plan.AutoRemoveTags.IsNull() && !plan.AutoRemoveTags.IsUnknown() {
+		resp.Diagnostics.Append(plan.AutoRemoveTags.ElementsAs(ctx, &autoRemoveTagNames, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	resolvedAutoRemoveTags, err := r.ensureNetworkTags(ctx, plan.Name.ValueString(), autoRemoveTagNames)
+	if err != nil {
+		resp.Diagnostics.AddError("Error configuring network's auto_remove_tags", err.Error())
+		return
+	}
+
 	n := &nmclient.Network{
 		NetID:               plan.Name.ValueString(),
 		AddressRange:        plan.AddressRange.ValueString(),
 		AddressRange6:       plan.AddressRange6.ValueString(),
-		DefaultKeepAlive:    int(plan.DefaultKeepAlive.ValueInt64()),
-		DefaultMTU:          int32(plan.DefaultMTU.ValueInt64()),
 		AutoJoin:            plan.AutoJoin.ValueBool(),
 		AutoRemove:          plan.AutoRemove.ValueBool(),
 		AutoRemoveThreshold: int(plan.AutoRemoveThreshold.ValueInt64()),
+		AutoRemoveTags:      resolvedAutoRemoveTags,
 		JITEnabled:          plan.JITEnabled.ValueBool(),
 	}
 
@@ -429,7 +525,8 @@ func (r *NetworkResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	model := networkToModel(updated)
+	model, modelDiags := networkToModel(ctx, updated)
+	resp.Diagnostics.Append(modelDiags...)
 	resp.Diagnostics.Append(applyDefaultEnrollmentKey(ctx, &model, defaultKey)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -454,17 +551,17 @@ func (r *NetworkResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
 
-func networkToModel(n *nmclient.Network) NetworkResourceModel {
+func networkToModel(ctx context.Context, n *nmclient.Network) (NetworkResourceModel, diag.Diagnostics) {
+	autoRemoveTags, diags := types.ListValueFrom(ctx, types.StringType, tagIDsToNames(n.NetID, n.AutoRemoveTags))
 	return NetworkResourceModel{
 		ID:                  types.StringValue(n.ID),
 		Name:                types.StringValue(n.NetID),
 		AddressRange:        types.StringValue(n.AddressRange),
 		AddressRange6:       types.StringValue(n.AddressRange6),
-		DefaultKeepAlive:    types.Int64Value(int64(n.DefaultKeepAlive)),
-		DefaultMTU:          types.Int64Value(int64(n.DefaultMTU)),
 		AutoJoin:            types.BoolValue(n.AutoJoin),
 		AutoRemove:          types.BoolValue(n.AutoRemove),
 		AutoRemoveThreshold: types.Int64Value(int64(n.AutoRemoveThreshold)),
+		AutoRemoveTags:      autoRemoveTags,
 		JITEnabled:          types.BoolValue(n.JITEnabled),
-	}
+	}, diags
 }

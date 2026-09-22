@@ -94,3 +94,26 @@ func (c *Client) DeleteNode(ctx context.Context, network, nodeID string, force b
 	}
 	return c.requestEnveloped(ctx, "DELETE", path, nil, nil)
 }
+
+// CreateGateway turns a node into an ingress gateway (the attach point for
+// netmaker_ext_client's gateway_node_id) — the API otherwise offers no way
+// to create/manage gateway status on a node. The request body must be
+// non-nil (even empty): the server errors on an empty POST body.
+func (c *Client) CreateGateway(ctx context.Context, network, nodeID string) (*Node, error) {
+	var out Node
+	path := "/api/nodes/" + url.PathEscape(network) + "/" + url.PathEscape(nodeID) + "/gateway"
+	if err := c.request(ctx, "POST", path, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteGateway removes the ingress gateway role from a node.
+func (c *Client) DeleteGateway(ctx context.Context, network, nodeID string) (*Node, error) {
+	var out Node
+	path := "/api/nodes/" + url.PathEscape(network) + "/" + url.PathEscape(nodeID) + "/gateway"
+	if err := c.request(ctx, "DELETE", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

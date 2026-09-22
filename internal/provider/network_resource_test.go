@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/config"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 )
 
 func TestNetworkResource(t *testing.T) {
@@ -19,7 +20,8 @@ func TestNetworkResource(t *testing.T) {
 			{
 				ConfigDirectory: config.TestNameDirectory(),
 				ConfigVariables: config.Variables{
-					"name": config.StringVariable(netID),
+					"name":          config.StringVariable(netID),
+					"address_range": config.StringVariable("10.50.0.0/16"),
 				},
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("netmaker_network.test", "name", netID),
@@ -34,7 +36,8 @@ func TestNetworkResource(t *testing.T) {
 			{
 				ConfigDirectory: config.TestNameDirectory(),
 				ConfigVariables: config.Variables{
-					"name": config.StringVariable(netID),
+					"name":          config.StringVariable(netID),
+					"address_range": config.StringVariable("10.50.0.0/16"),
 				},
 				ResourceName: "netmaker_network.test",
 				ImportState:  true,
@@ -45,6 +48,24 @@ func TestNetworkResource(t *testing.T) {
 				// a name and fails to find.
 				ImportStateId:     netID,
 				ImportStateVerify: true,
+			},
+			{
+				// address_range is immutable once created (see its
+				// RequiresReplace plan modifier in network_resource.go) —
+				// changing it must destroy and recreate the network rather
+				// than update it in place, since Netmaker's own update API
+				// silently ignores address changes.
+				ConfigDirectory: config.TestNameDirectory(),
+				ConfigVariables: config.Variables{
+					"name":          config.StringVariable(netID),
+					"address_range": config.StringVariable("10.51.0.0/16"),
+				},
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("netmaker_network.test", plancheck.ResourceActionReplace),
+					},
+				},
+				Check: resource.TestCheckResourceAttr("netmaker_network.test", "address_range", "10.51.0.0/16"),
 			},
 		},
 	})

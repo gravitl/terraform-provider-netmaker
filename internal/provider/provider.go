@@ -50,7 +50,7 @@ func (p *NetmakerProvider) Metadata(_ context.Context, _ provider.MetadataReques
 
 func (p *NetmakerProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages Netmaker networks, enrollment keys, devices, nodes, and ext clients.",
+		Description: "Manages Netmaker networks, enrollment keys, tags, devices, nodes, and ext clients.",
 		Attributes: map[string]schema.Attribute{
 			"api_url": schema.StringAttribute{
 				Description: "Base URL of the Netmaker server, e.g. https://netmaker.example.com. May also be set via the NETMAKER_API_URL environment variable.",
@@ -126,6 +126,7 @@ func (p *NetmakerProvider) Resources(_ context.Context) []func() resource.Resour
 		NewNodeResource,
 		NewDeviceResource,
 		NewExtClientResource,
+		NewTagResource,
 	}
 }
 

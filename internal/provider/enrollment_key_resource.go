@@ -142,6 +142,11 @@ func (r *EnrollmentKeyResource) buildRequest(ctx context.Context, plan Enrollmen
 		}
 	}
 
+	groups, err := r.resolveTagGroups(ctx, networks, tags)
+	if err != nil {
+		return nil, err
+	}
+
 	keyType, err := keyTypeFromString(plan.Type.ValueString())
 	if err != nil {
 		return nil, err
@@ -155,7 +160,7 @@ func (r *EnrollmentKeyResource) buildRequest(ctx context.Context, plan Enrollmen
 		// readable Tags value, both at creation and on update. Send both
 		// so the resource's "tags" attribute behaves as documented.
 		Tags:              tags,
-		Groups:            tags,
+		Groups:            groups,
 		Type:              keyType,
 		Unlimited:         keyType == nmclient.KeyTypeUnlimited,
 		UsesRemaining:     int(plan.UsesRemaining.ValueInt64()),
@@ -163,6 +168,42 @@ func (r *EnrollmentKeyResource) buildRequest(ctx context.Context, plan Enrollmen
 		Relay:             plan.GatewayID.ValueString(),
 		AutoAssignGateway: plan.AutoAssignGateway.ValueBool(),
 	}, nil
+}
+
+// resolveTagGroups validates that each of tagNames already exists as a
+// netmaker_tag in every network the key covers, and returns the
+// fully-qualified tag IDs ("<network>.<name>") to send as the key's
+// Groups. Netmaker's own API doesn't validate this — POST/PUT
+// /api/v1/enrollment-keys accepts any Groups value, including one that
+// doesn't correspond to a real tag, and silently persists the broken
+// reference — so this resource fails instead, rather than a normal
+// (non-default) enrollment key silently pointing at a tag that was never
+// created. Contrast with netmaker_network's default_enrollment_key, which
+// auto-creates missing tags instead of failing, since that key is created
+// as a side effect of network creation, before a netmaker_tag resource for
+// it could exist.
+func (r *EnrollmentKeyResource) resolveTagGroups(ctx context.Context, networks, tagNames []string) ([]string, error) {
+	if len(tagNames) == 0 {
+		return nil, nil
+	}
+	var groups []string
+	for _, network := range networks {
+		existing, err := r.client.ListTags(ctx, network)
+		if err != nil {
+			return nil, fmt.Errorf("listing tags for network %q: %w", network, err)
+		}
+		existingNames := make(map[string]struct{}, len(existing))
+		for _, t := range existing {
+			existingNames[t.TagName] = struct{}{}
+		}
+		for _, name := range tagNames {
+			if _, ok := existingNames[name]; !ok {
+				return nil, fmt.Errorf("tag %q does not exist in network %q — create it with a netmaker_tag resource first (Netmaker does not auto-create tags)", name, network)
+			}
+			groups = append(groups, nmclient.TagID(network, name))
+		}
+	}
+	return groups, nil
 }
 
 func keyTypeFromString(s string) (nmclient.KeyType, error) {

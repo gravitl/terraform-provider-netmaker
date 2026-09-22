@@ -37,11 +37,10 @@ func (d *NetworkDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 			"name":                   schema.StringAttribute{Required: true, Description: "Network name to look up."},
 			"address_range":          schema.StringAttribute{Computed: true},
 			"address_range6":         schema.StringAttribute{Computed: true},
-			"default_keepalive":      schema.Int64Attribute{Computed: true},
-			"default_mtu":            schema.Int64Attribute{Computed: true},
 			"auto_join":              schema.BoolAttribute{Computed: true},
 			"auto_remove":            schema.BoolAttribute{Computed: true},
 			"auto_remove_threshold":  schema.Int64Attribute{Computed: true},
+			"auto_remove_tags":       schema.ListAttribute{Computed: true, ElementType: types.StringType},
 			"jit_enabled":            schema.BoolAttribute{Computed: true},
 			"default_value":          schema.StringAttribute{Computed: true},
 			"default_token":          schema.StringAttribute{Computed: true, Sensitive: true},
@@ -107,7 +106,8 @@ func (d *NetworkDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		return
 	}
 
-	out := networkToModel(n)
+	out, diags := networkToModel(ctx, n)
+	resp.Diagnostics.Append(diags...)
 	resp.Diagnostics.Append(applyDefaultEnrollmentKey(ctx, &out, defaultKey)...)
 	if resp.Diagnostics.HasError() {
 		return

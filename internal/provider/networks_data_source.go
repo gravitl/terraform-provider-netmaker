@@ -6,6 +6,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	nmclient "github.com/gravitl/terraform-provider-netmaker/internal/client"
 )
@@ -45,11 +46,10 @@ func (d *NetworksDataSource) Schema(_ context.Context, _ datasource.SchemaReques
 						"name":                   schema.StringAttribute{Computed: true},
 						"address_range":          schema.StringAttribute{Computed: true},
 						"address_range6":         schema.StringAttribute{Computed: true},
-						"default_keepalive":      schema.Int64Attribute{Computed: true},
-						"default_mtu":            schema.Int64Attribute{Computed: true},
 						"auto_join":              schema.BoolAttribute{Computed: true},
 						"auto_remove":            schema.BoolAttribute{Computed: true},
 						"auto_remove_threshold":  schema.Int64Attribute{Computed: true},
+						"auto_remove_tags":       schema.ListAttribute{Computed: true, ElementType: types.StringType},
 						"jit_enabled":            schema.BoolAttribute{Computed: true},
 						"default_value":          schema.StringAttribute{Computed: true},
 						"default_token":          schema.StringAttribute{Computed: true, Sensitive: true},
@@ -82,7 +82,11 @@ func (d *NetworksDataSource) Read(ctx context.Context, _ datasource.ReadRequest,
 
 	model := NetworksDataSourceModel{Networks: make([]NetworkResourceModel, 0, len(networks))}
 	for i := range networks {
-		netModel := networkToModel(&networks[i])
+		netModel, diags := networkToModel(ctx, &networks[i])
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 
 		// One extra call per network to fetch its default enrollment key —
 		// acceptable at this scale; revisit if this list ever needs to

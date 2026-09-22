@@ -16,9 +16,6 @@ type Network struct {
 	AddressRange  string `json:"addressrange,omitempty"`
 	AddressRange6 string `json:"addressrange6,omitempty"`
 
-	DefaultKeepAlive int   `json:"defaultkeepalive,omitempty"`
-	DefaultMTU       int32 `json:"defaultmtu,omitempty"`
-
 	AutoJoin            bool     `json:"auto_join"`
 	AutoRemove          bool     `json:"auto_remove"`
 	AutoRemoveTags      []string `json:"auto_remove_tags,omitempty"`
@@ -65,11 +62,16 @@ func (c *Client) ListNetworks(ctx context.Context) ([]Network, error) {
 }
 
 // UpdateNetwork updates a network. Only a subset of fields are persisted by
-// the server (default_keep_alive, default_mtu, auto_join, auto_remove,
-// auto_remove_tags, auto_remove_threshold, jit_enabled, jit_user_group_ids,
-// virtual_nat_pool_ipv4, virtual_nat_site_prefixlen_ipv4) — send the full
-// struct (e.g. from a prior Get) with those fields changed; other fields
-// such as AddressRange are not editable via this endpoint.
+// the server (auto_join, auto_remove, auto_remove_tags,
+// auto_remove_threshold, virtual_nat_pool_ipv4,
+// virtual_nat_site_prefixlen_ipv4) — send the full struct (e.g. from a
+// prior Get) with those fields changed; other fields such as AddressRange
+// and jit_enabled are not editable via this endpoint, silently ignored if
+// sent. default_keepalive/default_mtu aren't modeled by this client at
+// all — Netmaker's own UI no longer exposes them, and the server ignores
+// them on update the same way, so there's nothing useful this provider can
+// do with them beyond letting them fall back to server-side defaults at
+// creation.
 func (c *Client) UpdateNetwork(ctx context.Context, n *Network) (*Network, error) {
 	var out Network
 	path := "/api/networks/" + url.PathEscape(n.NetID)

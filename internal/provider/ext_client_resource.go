@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -150,7 +151,7 @@ func (r *ExtClientResource) buildRequest(ctx context.Context, plan ExtClientReso
 			return nil, fmt.Errorf("invalid extra_allowed_ips: %v", err)
 		}
 	}
-	tags, err := stringListToTagSet(ctx, plan.Tags)
+	tags, err := r.resolveTagSet(ctx, plan.Network.ValueString(), plan.Tags)
 	if err != nil {
 		return nil, err
 	}
@@ -166,25 +167,54 @@ func (r *ExtClientResource) buildRequest(ctx context.Context, plan ExtClientReso
 	}, nil
 }
 
-func stringListToTagSet(ctx context.Context, l types.List) (map[string]struct{}, error) {
+// resolveTagSet validates that each tag name in l already exists as a
+// netmaker_tag in network, and returns the fully-qualified tag IDs
+// ("<network>.<name>") as a set, matching ExtClient.Tags' map[TagID]struct{}
+// shape server-side. Like netmaker_enrollment_key.tags (see its doc
+// comment), Netmaker's own API doesn't validate this — a tag referenced
+// here that was never created would otherwise silently persist as a
+// broken reference — so this resource fails instead.
+func (r *ExtClientResource) resolveTagSet(ctx context.Context, network string, l types.List) (map[string]struct{}, error) {
 	if l.IsNull() || l.IsUnknown() {
 		return nil, nil
 	}
-	var tags []string
-	if err := l.ElementsAs(ctx, &tags, false); err != nil {
+	var names []string
+	if err := l.ElementsAs(ctx, &names, false); err != nil {
 		return nil, fmt.Errorf("invalid tags: %v", err)
 	}
-	set := make(map[string]struct{}, len(tags))
-	for _, t := range tags {
-		set[t] = struct{}{}
+	if len(names) == 0 {
+		return nil, nil
+	}
+
+	existing, err := r.client.ListTags(ctx, network)
+	if err != nil {
+		return nil, fmt.Errorf("listing tags for network %q: %w", network, err)
+	}
+	existingNames := make(map[string]struct{}, len(existing))
+	for _, t := range existing {
+		existingNames[t.TagName] = struct{}{}
+	}
+
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if _, ok := existingNames[name]; !ok {
+			return nil, fmt.Errorf("tag %q does not exist in network %q — create it with a netmaker_tag resource first (Netmaker does not auto-create tags)", name, network)
+		}
+		set[nmclient.TagID(network, name)] = struct{}{}
 	}
 	return set, nil
 }
 
-func tagSetToStringList(ctx context.Context, set map[string]struct{}) (types.List, diag.Diagnostics) {
+// tagSetToStringList converts a server-returned ExtClient.Tags set (keyed
+// by fully-qualified tag ID, "<network>.<name>") back to the plain tag
+// names this resource's "tags" attribute is configured with, stripping
+// the "<network>." prefix. Network and tag names can't contain literal
+// dots (proLogic.CheckIDSyntax), so the prefix is unambiguous to strip.
+func tagSetToStringList(ctx context.Context, network string, set map[string]struct{}) (types.List, diag.Diagnostics) {
+	prefix := network + "."
 	tags := make([]string, 0, len(set))
-	for t := range set {
-		tags = append(tags, t)
+	for id := range set {
+		tags = append(tags, strings.TrimPrefix(id, prefix))
 	}
 	return types.ListValueFrom(ctx, types.StringType, tags)
 }
@@ -331,7 +361,7 @@ func (r *ExtClientResource) Delete(ctx context.Context, req resource.DeleteReque
 
 func extClientResourceToModel(ctx context.Context, c *nmclient.ExtClient, mode *ModeModel) (ExtClientResourceModel, diag.Diagnostics) {
 	extraAllowedIPs, diags := types.ListValueFrom(ctx, types.StringType, c.ExtraAllowedIPs)
-	tags, tagDiags := tagSetToStringList(ctx, c.Tags)
+	tags, tagDiags := tagSetToStringList(ctx, c.Network, c.Tags)
 	diags.Append(tagDiags...)
 
 	return ExtClientResourceModel{
