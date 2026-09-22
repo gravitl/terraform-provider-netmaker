@@ -50,7 +50,7 @@ func (p *NetmakerProvider) Metadata(_ context.Context, _ provider.MetadataReques
 
 func (p *NetmakerProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages Netmaker networks, enrollment keys, tags, devices, nodes, and ext clients.",
+		Description: "Manages Netmaker networks, enrollment keys, tags, devices, nodes, and ext clients. Requires Netmaker " + minServerVersion + " or newer.",
 		Attributes: map[string]schema.Attribute{
 			"api_url": schema.StringAttribute{
 				Description: "Base URL of the Netmaker server, e.g. https://netmaker.example.com. May also be set via the NETMAKER_API_URL environment variable.",
@@ -102,9 +102,12 @@ func (p *NetmakerProvider) Configure(ctx context.Context, req provider.Configure
 	}
 	client := nmclient.New(apiURL, opts...)
 
-	// Confirm connectivity and log the server version; this is a
-	// best-effort compatibility check, not a hard requirement, so the
-	// provider warns rather than fails on error or version skew.
+	// Confirm connectivity and check the server version. An unreachable
+	// server is only a warning (e.g. GetServerInfo itself may be disabled
+	// on some deployments), but a reachable server running an
+	// incompatible version is a hard failure — this provider relies on
+	// server APIs (e.g. netmaker_tag, netmaker_node.is_ingress_gateway)
+	// that don't exist before minServerVersion.
 	if info, err := client.GetServerInfo(ctx); err != nil {
 		resp.Diagnostics.AddWarning(
 			"Could not reach Netmaker server",
@@ -112,6 +115,10 @@ func (p *NetmakerProvider) Configure(ctx context.Context, req provider.Configure
 		)
 	} else {
 		tflog.Info(ctx, "connected to Netmaker server", map[string]any{"version": info.Version})
+		if err := checkServerVersion(info.Version); err != nil {
+			resp.Diagnostics.AddError("Unsupported Netmaker server version", err.Error())
+			return
+		}
 	}
 
 	data := &providerData{client: client}
