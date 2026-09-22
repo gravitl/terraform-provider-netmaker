@@ -1,5 +1,8 @@
 /bin/
 
+# goreleaser build output
+/dist/
+
 # Machine-local Terraform CLI config (dev_overrides) — see examples/README.md
 /dev.tfrc
 
