@@ -2,9 +2,13 @@ variable "name" {
   type = string
 }
 
+variable "address_range" {
+  type = string
+}
+
 resource "netmaker_network" "test" {
   name          = var.name
-  address_range = "10.50.0.0/16"
+  address_range = var.address_range
 
   default_enrollment_key = {
     auto_assign_gateway = false

@@ -1,0 +1,29 @@
+# Copy this file to terraform.tfvars and fill in real values.
+# terraform.tfvars is gitignored — safe to put real credentials there.
+# Leave any of these blank ("") to fall back to the matching
+# NETMAKER_API_URL / NETMAKER_API_TOKEN / NETMAKER_TENANT_ID env var instead.
+
+netmaker_api_url   = "https://netmaker.example.com"
+netmaker_api_token = "your-pat-here"
+netmaker_tenant_id = ""
+
+# netmaker_device (the gateway host) actually SSHes into a real,
+# disposable machine and installs netclient there.
+device_host_ip          = ""
+device_host_port        = 22
+device_username         = ""
+device_private_key      = ""
+device_private_key_path = ""
+device_password         = ""
+
+# Both netmaker_ext_client resources deploy to this machine — can be the
+# same one as above, or a different one.
+ext_client_host_ip          = ""
+ext_client_host_port        = 22
+ext_client_username         = ""
+ext_client_private_key      = ""
+ext_client_private_key_path = ""
+ext_client_password         = ""
+
+ext_client_dns               = "1.1.1.1"
+ext_client_extra_allowed_ips = ["192.168.100.0/24"]
