@@ -1,0 +1,19 @@
+/bin/
+
+# goreleaser build output
+/dist/
+
+# Machine-local Terraform CLI config (dev_overrides) — see examples/README.md
+/dev.tfrc
+
+# Terraform local state/lock/cache from running examples (each
+# examples/<subdir> is its own root module)
+examples/**/.terraform/
+examples/**/.terraform.lock.hcl
+examples/**/terraform.tfstate
+examples/**/terraform.tfstate.backup
+
+# Real creds — keep terraform.tfvars.example committed, not this
+examples/**/terraform.tfvars
+
+.idea/
