@@ -321,8 +321,8 @@ func (r *NetworkResource) applyDefaultEnrollmentKeyConfig(ctx context.Context, n
 }
 
 // ensureNetworkTags auto-creates any of tagNames that don't already exist
-// as a netmaker_tag in netID, and returns the fully-qualified tag IDs
-// ("<network>.<name>") to send server-side — used for both
+// as a netmaker_tag in netID, and returns the tags' IDs (as reported by the
+// server) to send server-side — used for both
 // default_enrollment_key.tags and auto_remove_tags. The literal "*"
 // (auto_remove_tags' "every node" wildcard) is passed through unchanged,
 // never looked up or created as a tag. Unlike netmaker_enrollment_key.tags
@@ -340,9 +340,9 @@ func (r *NetworkResource) ensureNetworkTags(ctx context.Context, netID string, t
 	if err != nil {
 		return nil, fmt.Errorf("listing tags for network %q: %w", netID, err)
 	}
-	existingNames := make(map[string]struct{}, len(existing))
+	idsByName := make(map[string]string, len(existing))
 	for _, t := range existing {
-		existingNames[t.TagName] = struct{}{}
+		idsByName[t.TagName] = t.ID
 	}
 	resolved := make([]string, 0, len(tagNames))
 	for _, name := range tagNames {
@@ -350,12 +350,15 @@ func (r *NetworkResource) ensureNetworkTags(ctx context.Context, netID string, t
 			resolved = append(resolved, name)
 			continue
 		}
-		if _, ok := existingNames[name]; !ok {
-			if _, err := r.client.CreateTag(ctx, netID, name, ""); err != nil {
+		id, ok := idsByName[name]
+		if !ok {
+			created, err := r.client.CreateTag(ctx, netID, name, "")
+			if err != nil {
 				return nil, fmt.Errorf("auto-creating tag %q in network %q: %w", name, netID, err)
 			}
+			id = created.ID
 		}
-		resolved = append(resolved, nmclient.TagID(netID, name))
+		resolved = append(resolved, id)
 	}
 	return resolved, nil
 }

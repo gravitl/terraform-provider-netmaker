@@ -17,7 +17,7 @@ Manages a Netmaker enrollment key (join token) for one or more networks.
 
 ### Required
 
-- `name` (String) Name of the key, 3-32 characters, unique across all enrollment keys on the server. Changing this forces recreation — Netmaker can't rename a key.
+- `name` (String) Name of the key, 3-32 characters, unique across all enrollment keys on the server. Unrelated to `tags`. Changing this forces recreation — Netmaker can't rename a key.
 - `networks` (List of String) Networks this key allows joining.
 - `type` (String) Key type: time_expiration, uses, or unlimited.
 
@@ -26,7 +26,7 @@ Manages a Netmaker enrollment key (join token) for one or more networks.
 - `auto_assign_gateway` (Boolean) Whether devices enrolled with this key auto-select a gateway.
 - `expiration_unix` (Number) Unix timestamp (seconds) the key expires at. Required when type = time_expiration.
 - `gateway_id` (String) ID of the relay/gateway node devices enrolled with this key are auto-relayed through, if any.
-- `tags` (List of String) Names of tags to apply to devices enrolled with this key. Each must already exist as a netmaker_tag in every network in `networks` (Netmaker doesn't auto-create tags). Can be shared across keys.
+- `tags` (List of String) IDs of tags to apply to devices enrolled with this key — reference a netmaker_tag's `id`. Each tag must already exist and be in one of `networks` (Netmaker doesn't auto-create tags); a tag only applies to nodes in its own network, so a key covering several networks gets exactly the tags listed. Unrelated to `name`, and can be shared across keys.
 - `uses_remaining` (Number) Number of remaining uses. Required when type = uses.
 
 ### Read-Only
