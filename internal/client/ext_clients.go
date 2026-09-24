@@ -2,24 +2,28 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net/url"
+	"strings"
 )
 
 // ExtClientRequest is the request body for creating or updating an ext
 // client (mirrors models.CustomExtClient).
 type ExtClientRequest struct {
-	ClientID        string              `json:"clientid,omitempty"`
-	PublicKey       string              `json:"publickey,omitempty"`
-	DNS             string              `json:"dns,omitempty"`
-	ExtraAllowedIPs []string            `json:"extraallowedips,omitempty"`
-	Enabled         bool                `json:"enabled,omitempty"`
-	PostUp          string              `json:"postup,omitempty"`
-	PostDown        string              `json:"postdown,omitempty"`
-	Tags            map[string]struct{} `json:"tags,omitempty"`
-	DeviceID        string              `json:"device_id,omitempty"`
-	DeviceName      string              `json:"device_name,omitempty"`
-	PublicEndpoint  string              `json:"public_endpoint,omitempty"`
-	OS              string              `json:"os,omitempty"`
+	ClientID        string   `json:"clientid,omitempty"`
+	PublicKey       string   `json:"publickey,omitempty"`
+	DNS             string   `json:"dns,omitempty"`
+	ExtraAllowedIPs []string `json:"extraallowedips,omitempty"`
+	// Enabled is always sent: on update the server reads a missing field as
+	// false, which would disable the client.
+	Enabled        bool                `json:"enabled"`
+	PostUp         string              `json:"postup,omitempty"`
+	PostDown       string              `json:"postdown,omitempty"`
+	Tags           map[string]struct{} `json:"tags,omitempty"`
+	DeviceID       string              `json:"device_id,omitempty"`
+	DeviceName     string              `json:"device_name,omitempty"`
+	PublicEndpoint string              `json:"public_endpoint,omitempty"`
+	OS             string              `json:"os,omitempty"`
 }
 
 // ExtClient is a remote-access client attached to an ingress gateway node
@@ -100,16 +104,60 @@ func (c *Client) GetExtClientConfigFile(ctx context.Context, network, clientID s
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	conf := string(data)
+	// When the gateway host has no endpoint IP, the server doesn't fail — it
+	// renders the config with a literal "<nil>" (e.g. `Endpoint =
+	// [<nil>]:51821`), which wg-quick then rejects with a confusing DNS
+	// error. Catch it here instead.
+	if strings.Contains(conf, "<nil>") {
+		return "", ErrNoGatewayEndpoint
+	}
+	return conf, nil
+}
+
+// ErrNoGatewayEndpoint means the ingress gateway's host has no endpoint IP
+// (its netclient hasn't reported a public IP), so the server can't render a
+// usable ext client config for it.
+var ErrNoGatewayEndpoint = errors.New("nmclient: the ingress gateway's host has no endpoint IP, so the server rendered an ext client config with an empty endpoint (\"<nil>\")")
+
+// GetGatewayEndpoint returns the endpoint IP currently known for the host
+// behind an ingress gateway node — its IPv4 endpoint if set, otherwise its
+// IPv6 one — or "" if the host hasn't reported one yet. The endpoint is
+// reported by the host's netclient daemon after it detects its public IP,
+// so it can lag a freshly created gateway node (or never appear, e.g. for a
+// host still pending approval).
+func (c *Client) GetGatewayEndpoint(ctx context.Context, network, nodeID string) (string, error) {
+	node, err := c.GetNode(ctx, network, nodeID)
+	if err != nil {
+		return "", err
+	}
+	device, err := c.GetDevice(ctx, node.HostID)
+	if err != nil {
+		return "", err
+	}
+	for _, ip := range []string{device.EndpointIP, device.EndpointIPv6} {
+		if ip != "" && !strings.Contains(ip, "nil") {
+			return ip, nil
+		}
+	}
+	return "", nil
 }
 
 // CreateExtClient creates a new ext client attached to the given ingress
 // gateway node.
+//
+// The server's create endpoint ignores two fields of req: it always creates
+// the client enabled and always with no tags. Those are only honored by the
+// update endpoint, so when req asks for either, this follows the create with
+// an update and returns the updated client.
 func (c *Client) CreateExtClient(ctx context.Context, network, ingressNodeID string, req *ExtClientRequest) (*ExtClient, error) {
 	var out ExtClient
 	path := "/api/extclients/" + url.PathEscape(network) + "/" + url.PathEscape(ingressNodeID)
 	if err := c.request(ctx, "POST", path, req, &out); err != nil {
 		return nil, err
+	}
+	if !req.Enabled || len(req.Tags) > 0 {
+		return c.UpdateExtClient(ctx, network, out.ClientID, req)
 	}
 	return &out, nil
 }

@@ -8,6 +8,12 @@ exclusive), plus the supporting `netmaker_network` and
 node into a gateway (see the extclients/ example for attaching ext clients
 to it).
 
+The example's network sets `auto_join = true`. On a network without it, a
+server with device approval enabled holds a joining device as pending until
+an admin approves it on the Netmaker dashboard; `netmaker_device` then can't
+be created and fails with a "Device is pending approval" error naming the
+network(s). Approve the device and apply again, or set `auto_join`.
+
 Both device resources actually SSH into real machines and install
 netclient — `auto_update` needs one reachable, disposable machine;
 `pinned_version` needs a second, separate one (comment it out in main.tf if

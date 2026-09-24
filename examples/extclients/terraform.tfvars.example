@@ -16,14 +16,25 @@ device_private_key      = ""
 device_private_key_path = ""
 device_password         = ""
 
-# Both netmaker_ext_client resources deploy to this machine — can be the
-# same one as above, or a different one.
+# netmaker_ext_client.default deploys to this machine — can be the same one
+# as above, or a different one.
 ext_client_host_ip          = ""
 ext_client_host_port        = 22
 ext_client_username         = ""
 ext_client_private_key      = ""
 ext_client_private_key_path = ""
 ext_client_password         = ""
+
+# netmaker_ext_client.custom needs its own, different machine: two ext
+# clients on one machine both route the network's range, and the second
+# tunnel fails to come up. Comment that resource out in main.tf if you only
+# have one client machine.
+ext_client_custom_host_ip          = ""
+ext_client_custom_host_port        = 22
+ext_client_custom_username         = ""
+ext_client_custom_private_key      = ""
+ext_client_custom_private_key_path = ""
+ext_client_custom_password         = ""
 
 ext_client_dns               = "1.1.1.1"
 ext_client_extra_allowed_ips = ["192.168.100.0/24"]

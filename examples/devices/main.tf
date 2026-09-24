@@ -15,9 +15,14 @@ provider "netmaker" {
   tenant_id = var.netmaker_tenant_id
 }
 
+# auto_join = true adds devices that join with this network's enrollment key
+# immediately. Without it, a server with device approval enabled holds each
+# device as pending until an admin approves it on the Netmaker dashboard —
+# and netmaker_device can't be created until then.
 resource "netmaker_network" "example" {
   name          = "tf-example-devices"
   address_range = "10.106.0.0/16"
+  auto_join     = true
 }
 
 # netmaker_enrollment_key.tags takes tag ids, and the tag must already exist

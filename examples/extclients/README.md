@@ -12,7 +12,23 @@ enrollment key's and the custom ext client's `tags` reference a
 
 The device and both ext clients actually SSH into real machines: the
 device installs netclient, and each ext client installs WireGuard and
-brings up its tunnel from the server-rendered config (both ext clients can
-share one target machine — each gets its own WireGuard interface name).
+brings up its tunnel from the server-rendered config. That's up to three
+machines: the gateway device, and one for each ext client. The two ext
+clients can't share a machine — both tunnels route the network's range, so
+the second `wg-quick up` fails with `RTNETLINK answers: File exists`.
+Comment out `netmaker_ext_client.custom` if you only have one client
+machine.
+
+Two things on the Netmaker side have to be in place before the ext clients
+can deploy:
+
+- The gateway device must not be pending approval. The example's network
+  sets `auto_join = true` so it's added right away; on a network without it,
+  an admin has to approve the device on the dashboard first.
+- The gateway device's netclient must have reported a public IP. Until it
+  has, the gateway has no endpoint and the ext client would get a config it
+  can't connect with, so `netmaker_ext_client` waits for one (about a
+  minute) and then fails with an explanation.
+
 See the top-level [examples/README.md](../README.md) for how to point
 Terraform at a locally built provider binary and set credentials.

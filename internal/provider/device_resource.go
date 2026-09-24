@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -192,6 +193,17 @@ func (r *DeviceResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 	if device == nil {
+		// A network with auto_join disabled doesn't add the device when it
+		// joins; it's held as a pending host until an admin approves it on
+		// the dashboard.
+		if pendingIn, err := r.client.PendingNetworksForHost(ctx, name); err == nil && len(pendingIn) > 0 {
+			resp.Diagnostics.AddError(
+				"Device is pending approval",
+				fmt.Sprintf("netclient joined, but the device %q wasn't created: network(s) %s have auto_join disabled, so it's waiting for an admin to approve it on the Netmaker dashboard. Approve it there and apply again (re-running the install/join on the machine is safe), or set auto_join = true on the network(s) so devices are added immediately.",
+					name, strings.Join(pendingIn, ", ")),
+			)
+			return
+		}
 		resp.Diagnostics.AddError("Device not found after join", fmt.Sprintf("no device named %q appeared after netclient join; check the target machine's netclient logs", name))
 		return
 	}

@@ -15,9 +15,14 @@ provider "netmaker" {
   tenant_id = var.netmaker_tenant_id
 }
 
+# auto_join = true adds devices that join with this network's enrollment key
+# immediately. Without it, a server with device approval enabled holds each
+# device as pending until an admin approves it on the Netmaker dashboard —
+# and netmaker_device can't be created until then.
 resource "netmaker_network" "example" {
   name          = "tf-example-extclients"
   address_range = "10.108.0.0/16"
+  auto_join     = true
 }
 
 # netmaker_enrollment_key.tags takes tag ids, and the tag must already exist
@@ -103,9 +108,11 @@ resource "netmaker_tag" "extclient_custom" {
 
 # Ext client with settings overridden: custom DNS, extra routed IPs, tags,
 # and disabled (Netmaker keeps the config but excludes it from active peer
-# updates until enabled = true). Deployed to the same machine as
-# netmaker_ext_client.default — each ext client gets its own WireGuard
-# interface name, so both coexist on one host.
+# updates until enabled = true). Needs its own target machine, separate from
+# netmaker_ext_client.default's: both tunnels route the whole network range,
+# and one machine can't have two interfaces claiming the same route (the
+# second `wg-quick up` fails with "RTNETLINK answers: File exists").
+# Comment this resource out if you only have one client machine.
 resource "netmaker_ext_client" "custom" {
   network         = netmaker_node.gateway.network
   gateway_node_id = netmaker_node.gateway.id
@@ -117,12 +124,12 @@ resource "netmaker_ext_client" "custom" {
 
   mode = {
     ssh = {
-      host_ip          = var.ext_client_host_ip
-      host_port        = var.ext_client_host_port
-      username         = var.ext_client_username
-      private_key      = var.ext_client_private_key
-      private_key_path = var.ext_client_private_key_path
-      password         = var.ext_client_password
+      host_ip          = var.ext_client_custom_host_ip
+      host_port        = var.ext_client_custom_host_port
+      username         = var.ext_client_custom_username
+      private_key      = var.ext_client_custom_private_key
+      private_key_path = var.ext_client_custom_private_key_path
+      password         = var.ext_client_custom_password
     }
   }
 }

@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -89,21 +92,47 @@ func (r *ExtClientResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"dns":         schema.StringAttribute{Optional: true, Computed: true},
-			"enabled":     schema.BoolAttribute{Optional: true, Computed: true},
-			"post_up":     schema.StringAttribute{Optional: true, Computed: true},
-			"post_down":   schema.StringAttribute{Optional: true, Computed: true},
-			"device_name": schema.StringAttribute{Optional: true, Computed: true},
+			// Unset optional attributes keep their previous value on update:
+			// the server's update endpoint replaces every field, so sending
+			// the zero value for an unset one would reset it.
+			"dns": schema.StringAttribute{
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"enabled": schema.BoolAttribute{
+				Description:   "Whether the ext client is enabled. Defaults to true.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			},
+			"post_up": schema.StringAttribute{
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"post_down": schema.StringAttribute{
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"device_name": schema.StringAttribute{
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
 			"extra_allowed_ips": schema.ListAttribute{
-				Optional:    true,
-				Computed:    true,
-				ElementType: types.StringType,
+				Optional:      true,
+				Computed:      true,
+				ElementType:   types.StringType,
+				PlanModifiers: []planmodifier.List{listplanmodifier.UseStateForUnknown()},
 			},
 			"tags": schema.ListAttribute{
-				Description: "IDs of tags to apply to this ext client — reference a netmaker_tag's `id`. Each tag must already exist and be in `network` (Netmaker doesn't auto-create tags).",
-				Optional:    true,
-				Computed:    true,
-				ElementType: types.StringType,
+				Description:   "IDs of tags to apply to this ext client — reference a netmaker_tag's `id`. Each tag must already exist and be in `network` (Netmaker doesn't auto-create tags).",
+				Optional:      true,
+				Computed:      true,
+				ElementType:   types.StringType,
+				PlanModifiers: []planmodifier.List{listplanmodifier.UseStateForUnknown()},
 			},
 			"address":  schema.StringAttribute{Computed: true},
 			"address6": schema.StringAttribute{Computed: true},
@@ -157,10 +186,18 @@ func (r *ExtClientResource) buildRequest(ctx context.Context, plan ExtClientReso
 		return nil, err
 	}
 
+	// Unset means the server default: new ext clients are enabled. (On
+	// update an unset value is already the previous one, via
+	// UseStateForUnknown.)
+	enabled := true
+	if !plan.Enabled.IsNull() && !plan.Enabled.IsUnknown() {
+		enabled = plan.Enabled.ValueBool()
+	}
+
 	return &nmclient.ExtClientRequest{
 		DNS:             plan.DNS.ValueString(),
 		ExtraAllowedIPs: extraAllowedIPs,
-		Enabled:         plan.Enabled.ValueBool(),
+		Enabled:         enabled,
 		Tags:            tags,
 		PostUp:          plan.PostUp.ValueString(),
 		PostDown:        plan.PostDown.ValueString(),
@@ -241,9 +278,32 @@ func (r *ExtClientResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
+	// Fail before creating anything if the gateway can't yet be reached at
+	// an endpoint — the server would happily create an ext client whose
+	// config has no usable Endpoint.
+	if err := r.waitForGatewayEndpoint(ctx, plan.Network.ValueString(), plan.GatewayNodeID.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Ingress gateway has no endpoint", err.Error())
+		return
+	}
+
 	created, err := r.client.CreateExtClient(ctx, plan.Network.ValueString(), plan.GatewayNodeID.ValueString(), reqBody)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating ext client", err.Error())
+		return
+	}
+
+	// Save state as soon as the ext client exists server-side. If deploying
+	// it to the target machine fails below, Terraform then records the
+	// resource as tainted and destroys it (including this server-side
+	// object) on the next apply, instead of leaving an orphan behind that
+	// nothing tracks.
+	model, diags := extClientResourceToModel(ctx, created, plan.Tags, plan.Mode)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, model)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -275,13 +335,37 @@ func (r *ExtClientResource) Create(ctx context.Context, req resource.CreateReque
 		resp.Diagnostics.AddError("Error applying WireGuard config", err.Error())
 		return
 	}
+}
 
-	model, diags := extClientResourceToModel(ctx, created, plan.Tags, plan.Mode)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
+// How long Create waits for the gateway host to report an endpoint IP.
+// Variables so tests can shorten them.
+var (
+	gatewayEndpointPollInterval = 5 * time.Second
+	gatewayEndpointAttempts     = 12
+)
+
+// waitForGatewayEndpoint polls until the host behind the gateway node has an
+// endpoint IP, tolerating the delay between a gateway node being created and
+// its netclient daemon reporting the host's public IP.
+func (r *ExtClientResource) waitForGatewayEndpoint(ctx context.Context, network, nodeID string) error {
+	for i := 0; i < gatewayEndpointAttempts; i++ {
+		endpoint, err := r.client.GetGatewayEndpoint(ctx, network, nodeID)
+		if err != nil {
+			return err
+		}
+		if endpoint != "" {
+			return nil
+		}
+		if i < gatewayEndpointAttempts-1 {
+			select {
+			case <-time.After(gatewayEndpointPollInterval):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, model)...)
+	return fmt.Errorf("gateway node %q in network %q has no endpoint IP after %s: its host's netclient hasn't reported a public IP, so an ext client couldn't connect to it. Check that the gateway device isn't still pending approval in this network, that its netclient daemon is running (`netclient list`, `journalctl -u netclient`) and can reach the internet to detect its public IP, or set the host's endpoint IP in Netmaker manually",
+		nodeID, network, time.Duration(gatewayEndpointAttempts-1)*gatewayEndpointPollInterval)
 }
 
 func (r *ExtClientResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
