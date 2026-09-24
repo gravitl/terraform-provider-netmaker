@@ -6,14 +6,6 @@ import (
 	"time"
 )
 
-// TagID builds a network-scoped tag identifier, "<network>.<name>"
-// (mirrors models.TagID / Tag.GetIDFromName on the server — a Tag's ID is
-// always its owning network's name plus its tag_name, not a
-// server-assigned UUID).
-func TagID(network, name string) string {
-	return network + "." + name
-}
-
 // Tag is a network-scoped tag (mirrors models.Tag). Unlike most resources
 // in this provider, a Tag has no lifecycle of its own tied to any other
 // resource — creating/deleting it is a first-class operation via

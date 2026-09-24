@@ -15,6 +15,6 @@ resource "netmaker_tag" "test" {
 resource "netmaker_enrollment_key" "test" {
   name     = "${var.name}-key"
   networks = [netmaker_network.test.name]
-  tags     = [netmaker_tag.test.name]
+  tags     = [netmaker_tag.test.id]
   type     = "unlimited"
 }

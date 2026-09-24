@@ -20,9 +20,9 @@ resource "netmaker_network" "example" {
   address_range = "10.108.0.0/16"
 }
 
-# netmaker_enrollment_key.tags requires the tag to already exist as a
-# netmaker_tag — Netmaker doesn't auto-create tags. Referencing .name
-# (rather than a literal string) is what creates that dependency.
+# netmaker_enrollment_key.tags takes tag ids, and the tag must already exist
+# as a netmaker_tag — Netmaker doesn't auto-create tags. Referencing the
+# tag's .id is also what makes Terraform create it first.
 resource "netmaker_tag" "example" {
   network = netmaker_network.example.name
   name    = "tf-example-extclients"
@@ -32,7 +32,7 @@ resource "netmaker_enrollment_key" "example" {
   name     = "tf-example-extclients-key"
   networks = [netmaker_network.example.name]
   type     = "unlimited"
-  tags     = [netmaker_tag.example.name]
+  tags     = [netmaker_tag.example.id]
 }
 
 # Actually SSHes into device_host_ip and installs netclient there, joining
@@ -112,7 +112,7 @@ resource "netmaker_ext_client" "custom" {
 
   dns               = var.ext_client_dns
   extra_allowed_ips = var.ext_client_extra_allowed_ips
-  tags              = [netmaker_tag.extclient_custom.name]
+  tags              = [netmaker_tag.extclient_custom.id]
   enabled           = false
 
   mode = {

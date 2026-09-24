@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -84,7 +85,7 @@ func (r *EnrollmentKeyResource) Schema(_ context.Context, _ resource.SchemaReque
 				ElementType: types.StringType,
 			},
 			"tags": schema.ListAttribute{
-				Description: "Names of tags to apply to devices enrolled with this key. Each must already exist as a netmaker_tag in every network in `networks` (Netmaker doesn't auto-create tags). Unrelated to `name`, and can be shared across keys.",
+				Description: "IDs of tags to apply to devices enrolled with this key — reference a netmaker_tag's `id`. Each tag must already exist and be in one of `networks` (Netmaker doesn't auto-create tags); a tag only applies to nodes in its own network, so a key covering several networks gets exactly the tags listed. Unrelated to `name`, and can be shared across keys.",
 				Optional:    true,
 				ElementType: types.StringType,
 			},
@@ -155,8 +156,7 @@ func (r *EnrollmentKeyResource) buildRequest(ctx context.Context, plan Enrollmen
 		return nil, fmt.Errorf("invalid name %q: must be 3-32 characters", name)
 	}
 
-	tagIDs, err := r.resolveTagIDs(ctx, networks, tags)
-	if err != nil {
+	if err := r.validateTagIDs(ctx, networks, tags); err != nil {
 		return nil, err
 	}
 
@@ -168,7 +168,7 @@ func (r *EnrollmentKeyResource) buildRequest(ctx context.Context, plan Enrollmen
 	return &nmclient.EnrollmentKeyRequest{
 		Name:              name,
 		Networks:          networks,
-		Tags:              tagIDs,
+		Tags:              tags,
 		Type:              keyType,
 		Unlimited:         keyType == nmclient.KeyTypeUnlimited,
 		UsesRemaining:     int(plan.UsesRemaining.ValueInt64()),
@@ -178,39 +178,39 @@ func (r *EnrollmentKeyResource) buildRequest(ctx context.Context, plan Enrollmen
 	}, nil
 }
 
-// resolveTagIDs validates that each of tagNames already exists as a
-// netmaker_tag in every network the key covers, and returns the
-// fully-qualified tag IDs ("<network>.<name>"). Netmaker's own API doesn't
-// validate this — it accepts any tag ID for an enrollment key, including
-// one that doesn't correspond to a real tag, and silently persists the
-// broken reference — so this resource fails instead, rather than a normal
-// (non-default) enrollment key silently pointing at a tag that was never
-// created. Contrast with netmaker_network's default_enrollment_key, which
-// auto-creates missing tags instead of failing, since that key is created
-// as a side effect of network creation, before a netmaker_tag resource for
-// it could exist.
-func (r *EnrollmentKeyResource) resolveTagIDs(ctx context.Context, networks, tagNames []string) ([]string, error) {
-	if len(tagNames) == 0 {
-		return nil, nil
+// validateTagIDs checks that each of tagIDs is the ID of a tag that already
+// exists in one of the key's networks.
+//
+// Netmaker's own API doesn't validate this — it accepts any tag ID for an
+// enrollment key, including one that doesn't correspond to a real tag, and
+// silently persists the broken reference — so this resource fails instead,
+// rather than a normal (non-default) enrollment key silently pointing at a
+// tag that was never created. Contrast with netmaker_network's
+// default_enrollment_key, which auto-creates missing tags instead of
+// failing, since that key is created as a side effect of network creation,
+// before a netmaker_tag resource for it could exist.
+func (r *EnrollmentKeyResource) validateTagIDs(ctx context.Context, networks, tagIDs []string) error {
+	if len(tagIDs) == 0 {
+		return nil
 	}
-	var ids []string
+
+	known := map[string]struct{}{}
 	for _, network := range networks {
 		existing, err := r.client.ListTags(ctx, network)
 		if err != nil {
-			return nil, fmt.Errorf("listing tags for network %q: %w", network, err)
+			return fmt.Errorf("listing tags for network %q: %w", network, err)
 		}
-		existingNames := make(map[string]struct{}, len(existing))
 		for _, t := range existing {
-			existingNames[t.TagName] = struct{}{}
-		}
-		for _, name := range tagNames {
-			if _, ok := existingNames[name]; !ok {
-				return nil, fmt.Errorf("tag %q does not exist in network %q — create it with a netmaker_tag resource first (Netmaker does not auto-create tags)", name, network)
-			}
-			ids = append(ids, nmclient.TagID(network, name))
+			known[t.ID] = struct{}{}
 		}
 	}
-	return ids, nil
+
+	for _, id := range tagIDs {
+		if _, ok := known[id]; !ok {
+			return fmt.Errorf("tag %q not found among the tags of this key's networks (%s) — tags are referenced by id (e.g. netmaker_tag.<name>.id); the tag must already exist and be in one of `networks` (Netmaker does not auto-create tags)", id, strings.Join(networks, ", "))
+		}
+	}
+	return nil
 }
 
 func keyTypeFromString(s string) (nmclient.KeyType, error) {
@@ -305,12 +305,21 @@ func (r *EnrollmentKeyResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 
-	// Networks reflects current membership, and Tags comes back as
-	// qualified tag IDs rather than the plain names this resource is
-	// configured with. Preserve the previously known Networks/Tags from
-	// state rather than trusting this response for those two fields.
+	// Networks reflects current membership, so preserve the previously
+	// known Networks from state rather than trusting this response.
 	updated := state
 	updated.Name = types.StringValue(found.Name)
+	if len(found.Tags) > 0 {
+		tags, diags := types.ListValueFrom(ctx, types.StringType, found.Tags)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		updated.Tags = tags
+	} else if !state.Tags.IsNull() && len(state.Tags.Elements()) > 0 {
+		// Tags were removed out of band (e.g. a tag was deleted).
+		updated.Tags = types.ListNull(types.StringType)
+	}
 	updated.Token = types.StringValue(found.Token)
 	updated.Unlimited = types.BoolValue(found.Unlimited)
 	updated.UsesRemaining = types.Int64Value(int64(found.UsesRemaining))
