@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"time"
 )
@@ -16,42 +17,85 @@ const (
 	KeyTypeUnlimited      KeyType = 3
 )
 
-// EnrollmentKeyRequest is the request body for creating or updating an
-// enrollment key (mirrors models.APIEnrollmentKey).
+// EnrollmentKeyRequest is the request for creating or updating an
+// enrollment key (mirrors models.APIEnrollmentKey, but with the server's
+// swapped field names corrected — see MarshalJSON).
 type EnrollmentKeyRequest struct {
+	// Name is the key's name. Sent as the wire "tags" field.
+	Name string `json:"-"`
+	// Tags are the key's tags as fully-qualified tag IDs (see TagID). Sent
+	// as the wire "groups" field.
+	Tags []string `json:"-"`
+
 	// Expiration is a unix timestamp (seconds); 0 means no expiration.
 	Expiration        int64    `json:"expiration,omitempty"`
 	UsesRemaining     int      `json:"uses_remaining,omitempty"`
 	Networks          []string `json:"networks"`
 	Unlimited         bool     `json:"unlimited,omitempty"`
-	Tags              []string `json:"tags"`
 	Type              KeyType  `json:"type"`
 	Relay             string   `json:"relay,omitempty"`
-	Groups            []string `json:"groups,omitempty"`
 	Default           bool     `json:"default,omitempty"`
 	AutoEgress        bool     `json:"auto_egress,omitempty"`
 	AutoAssignGateway bool     `json:"auto_assign_gw,omitempty"`
 }
 
+// MarshalJSON translates Name/Tags to the server's wire fields. Netmaker's
+// naming is backwards: on the wire, "tags" is the key's name (a slice, but
+// only the first element is used), while "groups" holds the real tag IDs.
+func (r EnrollmentKeyRequest) MarshalJSON() ([]byte, error) {
+	type plain EnrollmentKeyRequest
+	var wireTags []string
+	if r.Name != "" {
+		wireTags = []string{r.Name}
+	}
+	return json.Marshal(struct {
+		plain
+		WireTags   []string `json:"tags"`
+		WireGroups []string `json:"groups,omitempty"`
+	}{plain(r), wireTags, r.Tags})
+}
+
 // EnrollmentKey is the shape returned by CreateEnrollmentKey and
-// ListEnrollmentKeys (models.EnrollmentKey on the server).
-//
-// Note: the server sets Tags to a single-element slice containing the key's
-// internal name on this response, not the Tags originally requested.
+// ListEnrollmentKeys (models.EnrollmentKey on the server), with the
+// server's swapped field names corrected — see UnmarshalJSON.
 type EnrollmentKey struct {
+	// Name is the key's name. Read from the wire "tags" field.
+	Name string `json:"-"`
+	// Tags are the key's tags as fully-qualified tag IDs (see TagID). Read
+	// from the wire "groups" field.
+	Tags []string `json:"-"`
+
 	Expiration        time.Time `json:"expiration"`
 	UsesRemaining     int       `json:"uses_remaining"`
 	Value             string    `json:"value"`
 	Networks          []string  `json:"networks"`
 	Unlimited         bool      `json:"unlimited"`
-	Tags              []string  `json:"tags"`
 	Token             string    `json:"token,omitempty"`
 	Type              KeyType   `json:"type"`
 	Relay             string    `json:"relay"`
-	Groups            []string  `json:"groups"`
 	Default           bool      `json:"default"`
 	AutoEgress        bool      `json:"auto_egress"`
 	AutoAssignGateway bool      `json:"auto_assign_gw"`
+}
+
+// UnmarshalJSON is the inverse of EnrollmentKeyRequest.MarshalJSON: the
+// wire "tags" field is the key's name, and "groups" holds the real tag IDs.
+func (k *EnrollmentKey) UnmarshalJSON(data []byte) error {
+	type plain EnrollmentKey
+	aux := struct {
+		plain
+		WireTags   []string `json:"tags"`
+		WireGroups []string `json:"groups"`
+	}{}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*k = EnrollmentKey(aux.plain)
+	if len(aux.WireTags) > 0 {
+		k.Name = aux.WireTags[0]
+	}
+	k.Tags = aux.WireGroups
+	return nil
 }
 
 // EnrollmentKeyDetail is the persisted (schema.EnrollmentKey) shape returned

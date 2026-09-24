@@ -291,17 +291,12 @@ func (r *NetworkResource) Create(ctx context.Context, req resource.CreateRequest
 // tags) to match cfg, preserving the key's identity as an unlimited,
 // default key scoped only to this network.
 //
-// Two server-side quirks (logic.UpdateEnrollmentKey) matter here:
-//   - the request's Tags field is only used at key *creation* as the
-//     display name (tags[0]); the actually-persisted, readable Tags value
-//     is driven by the request's Groups field instead, both at creation
-//     and on update — so tags must be sent as Groups, not Tags.
-//   - Default is not preserved implicitly: if the request omits it (or
-//     sends false) while the key is currently the default, the server
-//     unsets Default. Since this is specifically the network's default
-//     key, Default: true must always be sent explicitly, or the key
-//     silently stops being discoverable via
-//     GetDefaultEnrollmentKeyForNetwork on the next read.
+// Default is not preserved implicitly by the server
+// (logic.UpdateEnrollmentKey): if the request omits it (or sends false)
+// while the key is currently the default, the server unsets Default. Since
+// this is specifically the network's default key, Default: true must
+// always be sent explicitly, or the key silently stops being discoverable
+// via GetDefaultEnrollmentKeyForNetwork on the next read.
 func (r *NetworkResource) applyDefaultEnrollmentKeyConfig(ctx context.Context, netID, keyValue string, cfg *DefaultEnrollmentKeyModel) (*nmclient.EnrollmentKeyDetail, error) {
 	var tags []string
 	if !cfg.Tags.IsNull() && !cfg.Tags.IsUnknown() {
@@ -309,7 +304,7 @@ func (r *NetworkResource) applyDefaultEnrollmentKeyConfig(ctx context.Context, n
 			return nil, fmt.Errorf("invalid default_enrollment_key.tags: %v", err)
 		}
 	}
-	groups, err := r.ensureNetworkTags(ctx, netID, tags)
+	tagIDs, err := r.ensureNetworkTags(ctx, netID, tags)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +313,7 @@ func (r *NetworkResource) applyDefaultEnrollmentKeyConfig(ctx context.Context, n
 		Unlimited:         true,
 		Type:              nmclient.KeyTypeUnlimited,
 		Default:           true,
-		Groups:            groups,
+		Tags:              tagIDs,
 		Relay:             cfg.GatewayID.ValueString(),
 		AutoAssignGateway: cfg.AutoAssignGateway.ValueBool(),
 	}
@@ -399,7 +394,15 @@ func decodeDefaultEnrollmentKeyConfig(ctx context.Context, obj types.Object) (*D
 }
 
 func defaultEnrollmentKeyToObject(ctx context.Context, d *nmclient.EnrollmentKeyDetail) (types.Object, diag.Diagnostics) {
-	tagsList, diags := types.ListValueFrom(ctx, types.StringType, d.Tags)
+	// The detail shape's Tags holds the key's real tags as qualified IDs
+	// ("<network>.<name>"); the default key covers exactly one network, so
+	// strip that prefix to get back the plain names this attribute is
+	// configured with.
+	tagNames := d.Tags
+	if len(d.Networks) > 0 {
+		tagNames = tagIDsToNames(d.Networks[0], d.Tags)
+	}
+	tagsList, diags := types.ListValueFrom(ctx, types.StringType, tagNames)
 	if diags.HasError() {
 		return types.ObjectNull(defaultEnrollmentKeyAttrTypes), diags
 	}

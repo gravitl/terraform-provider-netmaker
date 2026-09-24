@@ -46,11 +46,6 @@ resource "netmaker_tag" "time_expiration" {
   name    = "tf-example-time-expiration"
 }
 
-resource "netmaker_tag" "auto_gateway" {
-  network = netmaker_network.example.name
-  name    = "tf-example-auto-gateway"
-}
-
 # A tag is scoped to one network, so a key covering multiple networks
 # (multi_network below) needs one netmaker_tag per network, even when
 # using the same name in each.
@@ -66,6 +61,7 @@ resource "netmaker_tag" "multi_network_2" {
 
 # Unlimited uses, no expiration.
 resource "netmaker_enrollment_key" "unlimited" {
+  name     = "tf-example-unlimited-key"
   networks = [netmaker_network.example.name]
   type     = "unlimited"
   tags     = [netmaker_tag.unlimited.name]
@@ -74,6 +70,7 @@ resource "netmaker_enrollment_key" "unlimited" {
 # A fixed number of uses; the server decrements uses_remaining on each
 # device that joins with it.
 resource "netmaker_enrollment_key" "uses" {
+  name           = "tf-example-uses-key"
   networks       = [netmaker_network.example.name]
   type           = "uses"
   uses_remaining = 5
@@ -84,6 +81,7 @@ resource "netmaker_enrollment_key" "uses" {
 # key_expiration_unix (see variables.tf) to a real future timestamp before
 # applying — the default is just a placeholder.
 resource "netmaker_enrollment_key" "time_expiration" {
+  name            = "tf-example-expiring-key"
   networks        = [netmaker_network.example.name]
   type            = "time_expiration"
   expiration_unix = var.key_expiration_unix
@@ -94,15 +92,20 @@ resource "netmaker_enrollment_key" "time_expiration" {
 # one pinned via gateway_id — see the devices/ and extclients/ examples for
 # how to turn a node into a gateway (netmaker_node's is_ingress_gateway).
 resource "netmaker_enrollment_key" "auto_gateway" {
+  name                = "tf-example-auto-gateway-key"
   networks            = [netmaker_network.example.name]
   type                = "unlimited"
   auto_assign_gateway = true
-  tags                = [netmaker_tag.auto_gateway.name]
+
+  # Shares the tag with the "unlimited" key above — a key's name and its
+  # tags are independent, so any number of keys can use the same tag.
+  tags = [netmaker_tag.unlimited.name]
 }
 
 # Covers more than one network at once — a device joining with this key
 # gets a Node in every listed network.
 resource "netmaker_enrollment_key" "multi_network" {
+  name       = "tf-example-multi-network-key"
   networks   = [netmaker_network.example.name, netmaker_network.example2.name]
   type       = "unlimited"
   tags       = [netmaker_tag.multi_network_1.name]

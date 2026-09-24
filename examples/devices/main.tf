@@ -29,6 +29,7 @@ resource "netmaker_tag" "example" {
 }
 
 resource "netmaker_enrollment_key" "example" {
+  name     = "tf-example-devices-key"
   networks = [netmaker_network.example.name]
   type     = "unlimited"
   tags     = [netmaker_tag.example.name]

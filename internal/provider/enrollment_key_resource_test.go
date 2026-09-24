@@ -22,6 +22,8 @@ func TestEnrollmentKeyResource(t *testing.T) {
 					"name": config.StringVariable(netID),
 				},
 				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("netmaker_enrollment_key.test", "name", netID+"-key"),
+					resource.TestCheckResourceAttr("netmaker_enrollment_key.test", "tags.0", "tf-test"),
 					resource.TestCheckResourceAttr("netmaker_enrollment_key.test", "type", "unlimited"),
 					resource.TestCheckResourceAttr("netmaker_enrollment_key.test", "networks.0", netID),
 					resource.TestCheckResourceAttrSet("netmaker_enrollment_key.test", "value"),
