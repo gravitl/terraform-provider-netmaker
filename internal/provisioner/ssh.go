@@ -82,14 +82,16 @@ func (c *Client) Run(cmd string) (string, error) {
 	}
 	defer session.Close()
 
-	var out bytes.Buffer
-	session.Stdout = &out
-	session.Stderr = &out
-
-	if err := session.Run(cmd); err != nil {
-		return out.String(), fmt.Errorf("ssh: command %q failed: %w: %s", cmd, err, out.String())
+	// CombinedOutput rather than pointing Stdout and Stderr at one
+	// bytes.Buffer: the two are copied by separate goroutines, and sharing
+	// a plain Buffer between them can silently drop output (each copy's
+	// ReadFrom resets the length it saw when it started). CombinedOutput
+	// serializes the writes.
+	out, err := session.CombinedOutput(cmd)
+	if err != nil {
+		return string(out), fmt.Errorf("ssh: command %q failed: %w: %s", cmd, err, out)
 	}
-	return out.String(), nil
+	return string(out), nil
 }
 
 // WriteFile writes content to path on the target machine by piping it
@@ -104,12 +106,8 @@ func (c *Client) WriteFile(writeCmd, content string) error {
 	defer session.Close()
 
 	session.Stdin = bytes.NewBufferString(content)
-	var out bytes.Buffer
-	session.Stdout = &out
-	session.Stderr = &out
-
-	if err := session.Run(writeCmd); err != nil {
-		return fmt.Errorf("ssh: writing file via %q failed: %w: %s", writeCmd, err, out.String())
+	if out, err := session.CombinedOutput(writeCmd); err != nil {
+		return fmt.Errorf("ssh: writing file via %q failed: %w: %s", writeCmd, err, out)
 	}
 	return nil
 }

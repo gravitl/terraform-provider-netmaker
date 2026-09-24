@@ -15,23 +15,29 @@ provider "netmaker" {
   tenant_id = var.netmaker_tenant_id
 }
 
+# auto_join = true adds devices that join with this network's enrollment key
+# immediately. Without it, a server with device approval enabled holds each
+# device as pending until an admin approves it on the Netmaker dashboard —
+# and netmaker_device can't be created until then.
 resource "netmaker_network" "example" {
   name          = "tf-example-devices"
   address_range = "10.106.0.0/16"
+  auto_join     = true
 }
 
-# netmaker_enrollment_key.tags requires the tag to already exist as a
-# netmaker_tag — Netmaker doesn't auto-create tags. Referencing .name
-# (rather than a literal string) is what creates that dependency.
+# netmaker_enrollment_key.tags takes tag ids, and the tag must already exist
+# as a netmaker_tag — Netmaker doesn't auto-create tags. Referencing the
+# tag's .id is also what makes Terraform create it first.
 resource "netmaker_tag" "example" {
   network = netmaker_network.example.name
   name    = "tf-example-devices"
 }
 
 resource "netmaker_enrollment_key" "example" {
+  name     = "tf-example-devices-key"
   networks = [netmaker_network.example.name]
   type     = "unlimited"
-  tags     = [netmaker_tag.example.name]
+  tags     = [netmaker_tag.example.id]
 }
 
 # Auto-updating device — netclient keeps itself current, no pinned

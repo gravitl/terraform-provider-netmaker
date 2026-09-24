@@ -25,12 +25,12 @@ resource "netmaker_network" "example2" {
   address_range = "10.105.0.0/16"
 }
 
-# netmaker_enrollment_key.tags requires each tag to already exist as a
-# netmaker_tag in every network the key covers — Netmaker doesn't
+# netmaker_enrollment_key.tags takes tag ids, and each tag must already
+# exist as a netmaker_tag in one of the key's networks — Netmaker doesn't
 # auto-create tags, and unlike netmaker_network's default_enrollment_key
 # (see networks/main.tf), there's no reason this key can't just depend on
-# the tag being created first. Referencing .name (rather than a literal
-# string) is what creates that dependency.
+# the tag being created first. Referencing the tag's .id is what makes
+# Terraform create it first.
 resource "netmaker_tag" "unlimited" {
   network = netmaker_network.example.name
   name    = "tf-example-unlimited"
@@ -46,67 +46,67 @@ resource "netmaker_tag" "time_expiration" {
   name    = "tf-example-time-expiration"
 }
 
-resource "netmaker_tag" "auto_gateway" {
+# A tag belongs to one network — see multi_network below for how a key
+# covering several networks picks which network's tag it means.
+resource "netmaker_tag" "multi_network" {
   network = netmaker_network.example.name
-  name    = "tf-example-auto-gateway"
-}
-
-# A tag is scoped to one network, so a key covering multiple networks
-# (multi_network below) needs one netmaker_tag per network, even when
-# using the same name in each.
-resource "netmaker_tag" "multi_network_1" {
-  network = netmaker_network.example.name
-  name    = "tf-example-multi-network"
-}
-
-resource "netmaker_tag" "multi_network_2" {
-  network = netmaker_network.example2.name
   name    = "tf-example-multi-network"
 }
 
 # Unlimited uses, no expiration.
 resource "netmaker_enrollment_key" "unlimited" {
+  name     = "tf-example-unlimited-key"
   networks = [netmaker_network.example.name]
   type     = "unlimited"
-  tags     = [netmaker_tag.unlimited.name]
+  tags     = [netmaker_tag.unlimited.id]
 }
 
 # A fixed number of uses; the server decrements uses_remaining on each
 # device that joins with it.
 resource "netmaker_enrollment_key" "uses" {
+  name           = "tf-example-uses-key"
   networks       = [netmaker_network.example.name]
   type           = "uses"
   uses_remaining = 5
-  tags           = [netmaker_tag.uses.name]
+  tags           = [netmaker_tag.uses.id]
 }
 
 # Expires at a fixed point in time instead of a use count. Update
 # key_expiration_unix (see variables.tf) to a real future timestamp before
 # applying — the default is just a placeholder.
 resource "netmaker_enrollment_key" "time_expiration" {
+  name            = "tf-example-expiring-key"
   networks        = [netmaker_network.example.name]
   type            = "time_expiration"
   expiration_unix = var.key_expiration_unix
-  tags            = [netmaker_tag.time_expiration.name]
+  tags            = [netmaker_tag.time_expiration.id]
 }
 
 # Devices enrolled with this key auto-select a gateway instead of needing
 # one pinned via gateway_id — see the devices/ and extclients/ examples for
 # how to turn a node into a gateway (netmaker_node's is_ingress_gateway).
 resource "netmaker_enrollment_key" "auto_gateway" {
+  name                = "tf-example-auto-gateway-key"
   networks            = [netmaker_network.example.name]
   type                = "unlimited"
   auto_assign_gateway = true
-  tags                = [netmaker_tag.auto_gateway.name]
+
+  # Shares the tag with the "unlimited" key above — a key's name and its
+  # tags are independent, so any number of keys can use the same tag.
+  tags = [netmaker_tag.unlimited.id]
 }
 
 # Covers more than one network at once — a device joining with this key
-# gets a Node in every listed network.
+# gets a Node in every listed network. On a multi-network key, tags are
+# referenced by id ("<network>.<name>") rather than plain name, since a
+# name alone doesn't say which network's tag is meant. Only the tag listed
+# here is applied: nodes in tf-example-keys get it, nodes in
+# tf-example-keys2 get none.
 resource "netmaker_enrollment_key" "multi_network" {
-  networks   = [netmaker_network.example.name, netmaker_network.example2.name]
-  type       = "unlimited"
-  tags       = [netmaker_tag.multi_network_1.name]
-  depends_on = [netmaker_tag.multi_network_2]
+  name     = "tf-example-multi-network-key"
+  networks = [netmaker_network.example.name, netmaker_network.example2.name]
+  type     = "unlimited"
+  tags     = [netmaker_tag.multi_network.id]
 }
 
 output "unlimited_key_token" {

@@ -49,7 +49,7 @@ func (r *TagResource) Metadata(_ context.Context, req resource.MetadataRequest, 
 
 func (r *TagResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages a Netmaker tag: a network-scoped identifier that other resources (netmaker_enrollment_key's tags, ACLs, posture checks, egress) reference by name. Create this before referencing its name elsewhere — Netmaker doesn't auto-create tags, and referencing one that doesn't exist yet leaves a broken reference rather than failing (see netmaker_enrollment_key's doc comment). The one exception is netmaker_network's default_enrollment_key.tags, which auto-creates any tag that doesn't already exist, since that key is created as a side effect of network creation, before a netmaker_tag resource for it could exist.",
+		Description: "Manages a Netmaker tag: a network-scoped identifier that other resources (netmaker_enrollment_key's and netmaker_ext_client's tags, ACLs, posture checks, egress) reference by its `id`. Create this before referencing it elsewhere — Netmaker doesn't auto-create tags, and referencing one that doesn't exist leaves a broken reference rather than failing (see netmaker_enrollment_key's doc comment). The exception is netmaker_network's default_enrollment_key.tags and auto_remove_tags, which take plain tag names and auto-create any that don't exist: they're set as part of creating the network itself, so a netmaker_tag (which needs the network to exist) couldn't be referenced from them without a dependency cycle.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "Tag ID: \"<network>.<name>\".",

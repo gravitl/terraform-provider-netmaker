@@ -25,11 +25,11 @@ Creates a Netmaker ext client (remote-access WireGuard config) attached to an ex
 
 - `device_name` (String)
 - `dns` (String)
-- `enabled` (Boolean)
+- `enabled` (Boolean) Whether the ext client is enabled. Defaults to true.
 - `extra_allowed_ips` (List of String)
 - `post_down` (String)
 - `post_up` (String)
-- `tags` (List of String) Tags to apply to this ext client.
+- `tags` (List of String) IDs of tags to apply to this ext client — reference a netmaker_tag's `id`. Each tag must already exist and be in `network` (Netmaker doesn't auto-create tags).
 
 ### Read-Only
 

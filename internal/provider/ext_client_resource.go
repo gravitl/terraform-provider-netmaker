@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"maps"
+	"slices"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -88,21 +92,47 @@ func (r *ExtClientResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"dns":         schema.StringAttribute{Optional: true, Computed: true},
-			"enabled":     schema.BoolAttribute{Optional: true, Computed: true},
-			"post_up":     schema.StringAttribute{Optional: true, Computed: true},
-			"post_down":   schema.StringAttribute{Optional: true, Computed: true},
-			"device_name": schema.StringAttribute{Optional: true, Computed: true},
+			// Unset optional attributes keep their previous value on update:
+			// the server's update endpoint replaces every field, so sending
+			// the zero value for an unset one would reset it.
+			"dns": schema.StringAttribute{
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"enabled": schema.BoolAttribute{
+				Description:   "Whether the ext client is enabled. Defaults to true.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			},
+			"post_up": schema.StringAttribute{
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"post_down": schema.StringAttribute{
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"device_name": schema.StringAttribute{
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
 			"extra_allowed_ips": schema.ListAttribute{
-				Optional:    true,
-				Computed:    true,
-				ElementType: types.StringType,
+				Optional:      true,
+				Computed:      true,
+				ElementType:   types.StringType,
+				PlanModifiers: []planmodifier.List{listplanmodifier.UseStateForUnknown()},
 			},
 			"tags": schema.ListAttribute{
-				Description: "Tags to apply to this ext client.",
-				Optional:    true,
-				Computed:    true,
-				ElementType: types.StringType,
+				Description:   "IDs of tags to apply to this ext client — reference a netmaker_tag's `id`. Each tag must already exist and be in `network` (Netmaker doesn't auto-create tags).",
+				Optional:      true,
+				Computed:      true,
+				ElementType:   types.StringType,
+				PlanModifiers: []planmodifier.List{listplanmodifier.UseStateForUnknown()},
 			},
 			"address":  schema.StringAttribute{Computed: true},
 			"address6": schema.StringAttribute{Computed: true},
@@ -151,15 +181,23 @@ func (r *ExtClientResource) buildRequest(ctx context.Context, plan ExtClientReso
 			return nil, fmt.Errorf("invalid extra_allowed_ips: %v", err)
 		}
 	}
-	tags, err := r.resolveTagSet(ctx, plan.Network.ValueString(), plan.Tags)
+	tags, err := r.tagSet(ctx, plan.Network.ValueString(), plan.Tags)
 	if err != nil {
 		return nil, err
+	}
+
+	// Unset means the server default: new ext clients are enabled. (On
+	// update an unset value is already the previous one, via
+	// UseStateForUnknown.)
+	enabled := true
+	if !plan.Enabled.IsNull() && !plan.Enabled.IsUnknown() {
+		enabled = plan.Enabled.ValueBool()
 	}
 
 	return &nmclient.ExtClientRequest{
 		DNS:             plan.DNS.ValueString(),
 		ExtraAllowedIPs: extraAllowedIPs,
-		Enabled:         plan.Enabled.ValueBool(),
+		Enabled:         enabled,
 		Tags:            tags,
 		PostUp:          plan.PostUp.ValueString(),
 		PostDown:        plan.PostDown.ValueString(),
@@ -167,22 +205,21 @@ func (r *ExtClientResource) buildRequest(ctx context.Context, plan ExtClientReso
 	}, nil
 }
 
-// resolveTagSet validates that each tag name in l already exists as a
-// netmaker_tag in network, and returns the fully-qualified tag IDs
-// ("<network>.<name>") as a set, matching ExtClient.Tags' map[TagID]struct{}
-// shape server-side. Like netmaker_enrollment_key.tags (see its doc
-// comment), Netmaker's own API doesn't validate this — a tag referenced
-// here that was never created would otherwise silently persist as a
-// broken reference — so this resource fails instead.
-func (r *ExtClientResource) resolveTagSet(ctx context.Context, network string, l types.List) (map[string]struct{}, error) {
+// tagSet validates that each tag ID in l is the ID of a tag that already
+// exists in network, and returns them as a set, matching ExtClient.Tags'
+// map[TagID]struct{} shape server-side. Like netmaker_enrollment_key.tags
+// (see its doc comment), Netmaker's own API doesn't validate this — a tag
+// referenced here that was never created would otherwise silently persist
+// as a broken reference — so this resource fails instead.
+func (r *ExtClientResource) tagSet(ctx context.Context, network string, l types.List) (map[string]struct{}, error) {
 	if l.IsNull() || l.IsUnknown() {
 		return nil, nil
 	}
-	var names []string
-	if err := l.ElementsAs(ctx, &names, false); err != nil {
+	var ids []string
+	if err := l.ElementsAs(ctx, &ids, false); err != nil {
 		return nil, fmt.Errorf("invalid tags: %v", err)
 	}
-	if len(names) == 0 {
+	if len(ids) == 0 {
 		return nil, nil
 	}
 
@@ -190,33 +227,42 @@ func (r *ExtClientResource) resolveTagSet(ctx context.Context, network string, l
 	if err != nil {
 		return nil, fmt.Errorf("listing tags for network %q: %w", network, err)
 	}
-	existingNames := make(map[string]struct{}, len(existing))
+	known := make(map[string]struct{}, len(existing))
 	for _, t := range existing {
-		existingNames[t.TagName] = struct{}{}
+		known[t.ID] = struct{}{}
 	}
 
-	set := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		if _, ok := existingNames[name]; !ok {
-			return nil, fmt.Errorf("tag %q does not exist in network %q — create it with a netmaker_tag resource first (Netmaker does not auto-create tags)", name, network)
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := known[id]; !ok {
+			return nil, fmt.Errorf("tag %q not found in network %q — tags are referenced by id (e.g. netmaker_tag.<name>.id); the tag must already exist and be in this network (Netmaker does not auto-create tags)", id, network)
 		}
-		set[nmclient.TagID(network, name)] = struct{}{}
+		set[id] = struct{}{}
 	}
 	return set, nil
 }
 
-// tagSetToStringList converts a server-returned ExtClient.Tags set (keyed
-// by fully-qualified tag ID, "<network>.<name>") back to the plain tag
-// names this resource's "tags" attribute is configured with, stripping
-// the "<network>." prefix. Network and tag names can't contain literal
-// dots (proLogic.CheckIDSyntax), so the prefix is unambiguous to strip.
-func tagSetToStringList(ctx context.Context, network string, set map[string]struct{}) (types.List, diag.Diagnostics) {
-	prefix := network + "."
-	tags := make([]string, 0, len(set))
-	for id := range set {
-		tags = append(tags, strings.TrimPrefix(id, prefix))
+// tagSetToStringList converts a server-returned ExtClient.Tags set to the
+// list this resource's "tags" attribute holds. The set has no order, so if
+// prior (the configured/previous list) holds the same tags, it's returned
+// as-is to keep the configured order; otherwise the IDs are sorted.
+func tagSetToStringList(ctx context.Context, set map[string]struct{}, prior types.List) (types.List, diag.Diagnostics) {
+	if !prior.IsNull() && !prior.IsUnknown() {
+		var priorIDs []string
+		if diags := prior.ElementsAs(ctx, &priorIDs, false); !diags.HasError() && len(priorIDs) == len(set) {
+			same := true
+			for _, id := range priorIDs {
+				if _, ok := set[id]; !ok {
+					same = false
+					break
+				}
+			}
+			if same {
+				return prior, nil
+			}
+		}
 	}
-	return types.ListValueFrom(ctx, types.StringType, tags)
+	return types.ListValueFrom(ctx, types.StringType, slices.Sorted(maps.Keys(set)))
 }
 
 func (r *ExtClientResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -232,9 +278,32 @@ func (r *ExtClientResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
+	// Fail before creating anything if the gateway can't yet be reached at
+	// an endpoint — the server would happily create an ext client whose
+	// config has no usable Endpoint.
+	if err := r.waitForGatewayEndpoint(ctx, plan.Network.ValueString(), plan.GatewayNodeID.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Ingress gateway has no endpoint", err.Error())
+		return
+	}
+
 	created, err := r.client.CreateExtClient(ctx, plan.Network.ValueString(), plan.GatewayNodeID.ValueString(), reqBody)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating ext client", err.Error())
+		return
+	}
+
+	// Save state as soon as the ext client exists server-side. If deploying
+	// it to the target machine fails below, Terraform then records the
+	// resource as tainted and destroys it (including this server-side
+	// object) on the next apply, instead of leaving an orphan behind that
+	// nothing tracks.
+	model, diags := extClientResourceToModel(ctx, created, plan.Tags, plan.Mode)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, model)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -266,13 +335,37 @@ func (r *ExtClientResource) Create(ctx context.Context, req resource.CreateReque
 		resp.Diagnostics.AddError("Error applying WireGuard config", err.Error())
 		return
 	}
+}
 
-	model, diags := extClientResourceToModel(ctx, created, plan.Mode)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
+// How long Create waits for the gateway host to report an endpoint IP.
+// Variables so tests can shorten them.
+var (
+	gatewayEndpointPollInterval = 5 * time.Second
+	gatewayEndpointAttempts     = 12
+)
+
+// waitForGatewayEndpoint polls until the host behind the gateway node has an
+// endpoint IP, tolerating the delay between a gateway node being created and
+// its netclient daemon reporting the host's public IP.
+func (r *ExtClientResource) waitForGatewayEndpoint(ctx context.Context, network, nodeID string) error {
+	for i := 0; i < gatewayEndpointAttempts; i++ {
+		endpoint, err := r.client.GetGatewayEndpoint(ctx, network, nodeID)
+		if err != nil {
+			return err
+		}
+		if endpoint != "" {
+			return nil
+		}
+		if i < gatewayEndpointAttempts-1 {
+			select {
+			case <-time.After(gatewayEndpointPollInterval):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, model)...)
+	return fmt.Errorf("gateway node %q in network %q has no endpoint IP after %s: its host's netclient hasn't reported a public IP, so an ext client couldn't connect to it. Check that the gateway device isn't still pending approval in this network, that its netclient daemon is running (`netclient list`, `journalctl -u netclient`) and can reach the internet to detect its public IP, or set the host's endpoint IP in Netmaker manually",
+		nodeID, network, time.Duration(gatewayEndpointAttempts-1)*gatewayEndpointPollInterval)
 }
 
 func (r *ExtClientResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -293,7 +386,7 @@ func (r *ExtClientResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	model, diags := extClientResourceToModel(ctx, client, state.Mode)
+	model, diags := extClientResourceToModel(ctx, client, state.Tags, state.Mode)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -320,7 +413,7 @@ func (r *ExtClientResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	model, diags := extClientResourceToModel(ctx, updated, plan.Mode)
+	model, diags := extClientResourceToModel(ctx, updated, plan.Tags, plan.Mode)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -359,9 +452,9 @@ func (r *ExtClientResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 }
 
-func extClientResourceToModel(ctx context.Context, c *nmclient.ExtClient, mode *ModeModel) (ExtClientResourceModel, diag.Diagnostics) {
+func extClientResourceToModel(ctx context.Context, c *nmclient.ExtClient, priorTags types.List, mode *ModeModel) (ExtClientResourceModel, diag.Diagnostics) {
 	extraAllowedIPs, diags := types.ListValueFrom(ctx, types.StringType, c.ExtraAllowedIPs)
-	tags, tagDiags := tagSetToStringList(ctx, c.Network, c.Tags)
+	tags, tagDiags := tagSetToStringList(ctx, c.Tags, priorTags)
 	diags.Append(tagDiags...)
 
 	return ExtClientResourceModel{

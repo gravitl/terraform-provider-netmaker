@@ -1,6 +1,9 @@
 package provisioner
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // OSFamily is a detected target OS, matching Go's GOOS naming.
 type OSFamily string
@@ -66,5 +69,5 @@ func errUnsupportedOS(unameS string) error {
 type unsupportedOSError struct{ unameS string }
 
 func (e *unsupportedOSError) Error() string {
-	return "provisioner: unrecognized target OS from `uname -s`: " + e.unameS
+	return fmt.Sprintf("provisioner: unrecognized target OS from `uname -s`: %q", e.unameS)
 }
